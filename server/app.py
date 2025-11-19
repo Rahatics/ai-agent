@@ -7,6 +7,27 @@ from flask import Flask
 from flask_socketio import SocketIO
 from playwright.sync_api import sync_playwright
 
+# --- নতুন সংযোজন: কঠোর সিস্টেম নির্দেশাবলী (STRICT_SYSTEM_INSTRUCTION) ---
+STRICT_SYSTEM_INSTRUCTION = """
+--- AGENT MODE: ON ---
+You are an autonomous AI Coding Agent. Your output must STRICTLY adhere to the following rules:
+
+1.  **FILE/EXECUTION COMMANDS (DEFAULT):** If the task requires file system interaction (read, write) or terminal execution, you MUST respond with a single, valid, compact JSON array.
+    -   DO NOT include ANY text, explanations, code blocks, or markdown outside of the JSON block.
+    -   The JSON block MUST be enclosed exclusively in ```json.
+    -   Example Format:
+        ```json
+        [{"cmd": "write", "path": "test.js", "content": "console.log('Hello')"}]
+        ```
+2.  **INLINE COMPLETION MODE:** If the user's request is ONLY for code completion (contains phrases like 'Complete the following code'), you MUST respond ONLY with the RAW CODE TEXT.
+    -   DO NOT use markdown fences (```) for raw code.
+    -   DO NOT include any explanation or conversational filler.
+    
+3.  **FAILURE:** Any deviation from these format rules will cause the agent to fail. Respond ONLY with the requested format (JSON block or raw code).
+
+--- USER REQUEST BELOW ---
+"""
+
 app = Flask(__name__)
 # Threading mode is crucial for Playwright + Flask
 socketio = SocketIO(app, cors_allowed_origins="*", async_mode='threading')
@@ -16,7 +37,7 @@ cmd_queue = queue.Queue()
 
 def scrape_gemini_response(page):
     """
-    Advanced Scraper: Waits for text stability to ensure full response capture.
+    Advanced Scraper: Waats for text stability to ensure full response capture.
     Fixed: Now supports short responses like "[]"
     Enhanced: Better JSON detection and extraction
     """
@@ -187,8 +208,15 @@ def run_browser_logic():
                     task = cmd_queue.get(timeout=1)
                     
                     if task['type'] == 'write':
-                        text = task['msg']
-                        print(f"🤖 Sending Command: {text[:30]}...")
+                        user_message = task['msg']
+                        
+                        # --- নতুন সংযোজন: কঠোর প্রম্পট তৈরি ---
+                        # ব্যবহারকারীর বার্তার আগে কঠোর সিস্টেম নির্দেশাবলী যুক্ত করা হচ্ছে।
+                        # এটি নিশ্চিত করবে যে জেমিনি তার আউটপুট ফরমেট নিয়ে সবসময় সচেতন।
+                        full_prompt = STRICT_SYSTEM_INSTRUCTION + user_message
+                        # -------------------------------------
+                        
+                        print(f"🤖 Sending Command: {user_message[:30]}...")
                         
                         # Find Input Box
                         input_found = False
@@ -202,7 +230,8 @@ def run_browser_logic():
                             if page.locator(sel).count() > 0:
                                 box = page.locator(sel).first
                                 box.click()
-                                box.fill(text)
+                                # fill(full_prompt) ব্যবহার করে নতুন প্রম্পট ইনপুট করা
+                                box.fill(full_prompt)
                                 page.keyboard.press("Enter")
                                 input_found = True
                                 break
@@ -212,7 +241,7 @@ def run_browser_logic():
                             reply = scrape_gemini_response(page)
                             
                             # Check if this is a completion request
-                            if 'completion' in text.lower():
+                            if 'completion' in user_message.lower():
                                 # Send special completion result format
                                 socketio.emit('ai_response', {
                                     'type': 'completion_result',
@@ -259,6 +288,7 @@ def handle_connect():
 
 @socketio.on('send_prompt')
 def handle_prompt(data):
+    # এই ফাংশনটি শুধু ডাটা কিউতে পাঠাবে, প্রম্পট ফর্মেটিং এখন run_browser_logic হ্যান্ডেল করছে।
     cmd_queue.put({'type': 'write', 'msg': data.get('message')})
 
 @socketio.on('set_environment')
