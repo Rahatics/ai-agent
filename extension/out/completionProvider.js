@@ -40,19 +40,19 @@ class CompletionProvider {
                 };
                 // Listen for response
                 this.socket.on('ai_response', responseHandler);
-                // Send the request
+                // Send the request with context about the current code block
                 this.socket.emit('send_prompt', {
                     message: `Complete the following code in ${document.languageId}:
-
+                    
 ${textBeforeCursor}
 
-Provide only the completion without any explanations.`
+Provide only the completion without any explanations. Focus on the current code block and its immediate context.`
                 });
-                // Timeout after 5 seconds
+                // Timeout after 7 seconds (increased from 5 seconds)
                 setTimeout(() => {
                     this.socket?.off('ai_response', responseHandler);
                     resolve([]);
-                }, 5000);
+                }, 7000);
             }
             else {
                 resolve([]);

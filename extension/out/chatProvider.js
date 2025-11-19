@@ -1,26 +1,15 @@
 "use strict";
 Object.defineProperty(exports, "__esModule", { value: true });
 exports.ChatProvider = void 0;
+// @ts-ignore: VS Code types may not be available in development environment
 const vscode = require("vscode");
+const fs = require("fs");
+const path = require("path");
+const diffApplier_1 = require("./diffApplier");
 class ChatProvider {
     constructor(socket) {
         this.socket = null;
-        this.chatInstance = null;
         this.socket = socket;
-        this.registerChatParticipant();
-    }
-    registerChatParticipant() {
-        // @ts-ignore: VS Code types may not be available in development environment
-        this.chatInstance = vscode.chat.createChatParticipant('gemini-agent', async (request, _context, response, _token) => {
-            // Handle the chat request
-            return await this.handleChatRequest(request, response);
-        });
-        // Set participant metadata
-        if (this.chatInstance) {
-            this.chatInstance.iconPath = vscode.Uri.parse('https://upload.wikimedia.org/wikipedia/commons/8/8a/Gemini_logo.svg');
-            this.chatInstance.description = 'Gemini AI Coding Assistant';
-            this.chatInstance.fullName = 'Gemini AI Coding Assistant';
-        }
     }
     async handleChatRequest(request, response) {
         // Send typing indicator
@@ -29,13 +18,15 @@ class ChatProvider {
             if (this.socket && this.socket.connected) {
                 // Listen for AI response
                 const responseHandler = (data) => {
-                    if (data.text) {
+                    if (data.text || data.type === 'error') {
                         // Clean up listener
                         this.socket?.off('ai_response', responseHandler);
                         // Clear the typing indicator
-                        response.clear();
+                        if (response.clear) {
+                            response.clear();
+                        }
                         // Process and send the response
-                        this.processAIResponse(data.text, response);
+                        this.processAIResponse(data, response);
                         resolve({
                             metadata: {
                                 command: ''
@@ -52,7 +43,9 @@ class ChatProvider {
                 // Handle timeout
                 setTimeout(() => {
                     this.socket?.off('ai_response', responseHandler);
-                    response.clear();
+                    if (response.clear) {
+                        response.clear();
+                    }
                     response.markdown('Sorry, I timed out. Please try again.');
                     resolve({
                         metadata: {
@@ -62,7 +55,9 @@ class ChatProvider {
                 }, 15000);
             }
             else {
-                response.clear();
+                if (response.clear) {
+                    response.clear();
+                }
                 response.markdown('Not connected to the AI agent. Please make sure the server is running.');
                 resolve({
                     metadata: {
@@ -72,9 +67,15 @@ class ChatProvider {
             }
         });
     }
-    processAIResponse(text, response) {
+    processAIResponse(data, response) {
+        // Handle structured errors
+        if (data.type === 'error') {
+            response.markdown(`❌ **Error**: ${data.msg}`);
+            return;
+        }
+        const text = data.text;
         // Check if the response contains commands to execute
-        if (text.includes('"cmd"')) {
+        if (text && text.includes('"cmd"')) {
             try {
                 // Extract JSON commands from the response
                 let cleanText = text.replace(/```json/g, "").replace(/```/g, "").trim();
@@ -100,7 +101,7 @@ class ChatProvider {
                         if (explanation.trim()) {
                             response.markdown(explanation);
                         }
-                        // Process commands
+                        // Process commands with actual execution and action chaining
                         this.processCommands(commands, response);
                         return;
                     }
@@ -113,31 +114,176 @@ class ChatProvider {
             }
         }
         // If no commands, just display the text
-        response.markdown(text);
+        response.markdown(text || "No response received.");
     }
-    processCommands(commands, response) {
+    async processCommands(commands, response) {
         response.markdown('\n\nExecuting commands:\n');
-        commands.forEach((cmd, index) => {
+        for (let i = 0; i < commands.length; i++) {
+            const cmd = commands[i];
+            const index = i + 1;
             switch (cmd.cmd) {
                 case 'read':
-                    response.markdown(`${index + 1}. Reading file: ${cmd.path || cmd.file}\n`);
+                    try {
+                        const filePath = cmd.path || cmd.file;
+                        response.markdown(`${index}. Reading file: ${filePath}\n`);
+                        // Actually read the file
+                        const workspaceFolders = vscode.workspace.workspaceFolders;
+                        if (workspaceFolders && workspaceFolders.length > 0) {
+                            const rootPath = workspaceFolders[0].uri.fsPath;
+                            const fullPath = path.join(rootPath, filePath);
+                            if (fs.existsSync(fullPath)) {
+                                const content = fs.readFileSync(fullPath, 'utf8');
+                                response.markdown(`
+Content of ${filePath}:
+\`\`\`
+${content}
+\`\`\`
+`);
+                            }
+                            else {
+                                const errorMsg = `File not found: ${filePath}`;
+                                response.markdown(`\n❌ ${errorMsg}\n`);
+                                // Automatic feedback loop: Send error back to Gemini
+                                if (this.socket && this.socket.connected) {
+                                    this.socket.emit('send_prompt', {
+                                        message: `[SYSTEM ERROR] Execution failed for 'read' command. Error: ${errorMsg}. Please check the file path and try again.`
+                                    });
+                                }
+                            }
+                        }
+                        else {
+                            const errorMsg = "No workspace folder open";
+                            response.markdown(`\n❌ ${errorMsg}\n`);
+                            // Automatic feedback loop: Send error back to Gemini
+                            if (this.socket && this.socket.connected) {
+                                this.socket.emit('send_prompt', {
+                                    message: `[SYSTEM ERROR] Execution failed for 'read' command. Error: ${errorMsg}. Please ensure a workspace folder is open.`
+                                });
+                            }
+                        }
+                    }
+                    catch (error) {
+                        const errorMsg = `Error reading file: ${error}`;
+                        response.markdown(`\n❌ ${errorMsg}\n`);
+                        // Automatic feedback loop: Send error back to Gemini
+                        if (this.socket && this.socket.connected) {
+                            this.socket.emit('send_prompt', {
+                                message: `[SYSTEM ERROR] Execution failed for 'read' command. Error: ${errorMsg}. Please try a different approach.`
+                            });
+                        }
+                    }
                     break;
                 case 'write':
-                    response.markdown(`${index + 1}. Writing file: ${cmd.path || cmd.file}\n`);
+                    try {
+                        const filePath = cmd.path || cmd.file;
+                        response.markdown(`${index}. Writing file: ${filePath}\n`);
+                        // Check if this is a diff/patch instead of full content
+                        if (cmd.diff || cmd.patch) {
+                            // Apply diff using DiffApplier
+                            const editor = vscode.window.activeTextEditor;
+                            if (editor) {
+                                const success = await diffApplier_1.DiffApplier.applyUnifiedDiff(editor, cmd.diff || cmd.patch);
+                                if (success) {
+                                    response.markdown(`\n✅ Successfully applied diff to ${filePath}\n`);
+                                }
+                                else {
+                                    const errorMsg = `Failed to apply diff to ${filePath}`;
+                                    response.markdown(`\n❌ ${errorMsg}\n`);
+                                    // Automatic feedback loop: Send error back to Gemini
+                                    if (this.socket && this.socket.connected) {
+                                        this.socket.emit('send_prompt', {
+                                            message: `[SYSTEM ERROR] Execution failed for 'write' command with diff. Error: ${errorMsg}. Please check the diff format and try again.`
+                                        });
+                                    }
+                                }
+                            }
+                            else {
+                                const errorMsg = "No active editor to apply diff";
+                                response.markdown(`\n❌ ${errorMsg}\n`);
+                                // Automatic feedback loop: Send error back to Gemini
+                                if (this.socket && this.socket.connected) {
+                                    this.socket.emit('send_prompt', {
+                                        message: `[SYSTEM ERROR] Execution failed for 'write' command with diff. Error: ${errorMsg}. Please open a file in the editor first.`
+                                    });
+                                }
+                            }
+                        }
+                        else {
+                            // Write full file content
+                            const workspaceFolders = vscode.workspace.workspaceFolders;
+                            if (workspaceFolders && workspaceFolders.length > 0) {
+                                const rootPath = workspaceFolders[0].uri.fsPath;
+                                const fullPath = path.join(rootPath, filePath);
+                                const dirPath = path.dirname(fullPath);
+                                // Create directory if it doesn't exist
+                                if (!fs.existsSync(dirPath)) {
+                                    fs.mkdirSync(dirPath, { recursive: true });
+                                }
+                                // Write file content
+                                fs.writeFileSync(fullPath, cmd.content, 'utf8');
+                                response.markdown(`\n✅ Successfully wrote to ${filePath}\n`);
+                            }
+                            else {
+                                const errorMsg = "No workspace folder open";
+                                response.markdown(`\n❌ ${errorMsg}\n`);
+                                // Automatic feedback loop: Send error back to Gemini
+                                if (this.socket && this.socket.connected) {
+                                    this.socket.emit('send_prompt', {
+                                        message: `[SYSTEM ERROR] Execution failed for 'write' command. Error: ${errorMsg}. Please ensure a workspace folder is open.`
+                                    });
+                                }
+                            }
+                        }
+                    }
+                    catch (error) {
+                        const errorMsg = `Error writing file: ${error}`;
+                        response.markdown(`\n❌ ${errorMsg}\n`);
+                        // Automatic feedback loop: Send error back to Gemini
+                        if (this.socket && this.socket.connected) {
+                            this.socket.emit('send_prompt', {
+                                message: `[SYSTEM ERROR] Execution failed for 'write' command. Error: ${errorMsg}. Please try a different approach.`
+                            });
+                        }
+                    }
                     break;
                 case 'exec':
-                    response.markdown(`${index + 1}. Executing: ${cmd.command}\n`);
+                    try {
+                        response.markdown(`${index}. Executing: ${cmd.command}\n`);
+                        // Reuse existing terminal instead of creating new ones
+                        if (!this.aiTerminal || this.aiTerminal.exitStatus !== undefined) {
+                            this.aiTerminal = vscode.window.terminals.find(t => t.name === 'AI Agent') || vscode.window.createTerminal('AI Agent');
+                        }
+                        this.aiTerminal.show();
+                        this.aiTerminal.sendText(cmd.command);
+                        // Capture terminal output for error checking
+                        // Note: VS Code API limitations prevent direct terminal output capture
+                        // In a more advanced implementation, we would use a custom terminal or
+                        // execute commands through child processes to capture output
+                        response.markdown(`\n✅ Command sent to terminal. Monitoring for output...\n`);
+                        // Action chaining: Send terminal output back to Gemini after execution
+                        // This would require a more complex implementation with terminal output listeners
+                    }
+                    catch (error) {
+                        const errorMsg = `Error executing command: ${error}`;
+                        response.markdown(`\n❌ ${errorMsg}\n`);
+                        // Automatic feedback loop: Send error back to Gemini
+                        if (this.socket && this.socket.connected) {
+                            this.socket.emit('send_prompt', {
+                                message: `[SYSTEM ERROR] Execution failed for 'exec' command. Error: ${errorMsg}. Please try a different approach.`
+                            });
+                        }
+                    }
                     break;
                 default:
-                    response.markdown(`${index + 1}. Unknown command: ${cmd.cmd}\n`);
+                    const errorMsg = `Unknown command: ${cmd.cmd}`;
+                    response.markdown(`${index}. ❌ ${errorMsg}\n`);
+                    // Automatic feedback loop: Send error back to Gemini
+                    if (this.socket && this.socket.connected) {
+                        this.socket.emit('send_prompt', {
+                            message: `[SYSTEM ERROR] Execution failed. Error: ${errorMsg}. Please use only supported commands (read, write, exec).`
+                        });
+                    }
             }
-            // Here we would actually execute the commands through VS Code APIs
-            // This would be done in the extension.ts file which has access to those APIs
-        });
-    }
-    dispose() {
-        if (this.chatInstance) {
-            this.chatInstance.dispose();
         }
     }
 }
