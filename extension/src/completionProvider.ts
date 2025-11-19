@@ -60,13 +60,13 @@ export class CompletionProvider implements vscode.InlineCompletionItemProvider {
                 // Listen for response
                 this.socket.on('ai_response', responseHandler);
 
-                // Send the request
+                // Send the request with context about the current code block
                 this.socket.emit('send_prompt', {
                     message: `Complete the following code in ${document.languageId}:
-
+                    
 ${textBeforeCursor}
 
-Provide only the completion without any explanations.`
+Provide only the completion without any explanations. Focus on the current code block and its immediate context.`
                 });
 
                 // Timeout after 5 seconds

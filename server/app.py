@@ -3,6 +3,8 @@ import queue
 import time
 import json
 import re
+import subprocess
+import os
 from flask import Flask
 from flask_socketio import SocketIO
 from playwright.sync_api import sync_playwright
@@ -18,6 +20,10 @@ You are an autonomous AI Coding Agent. Your output must STRICTLY adhere to the f
     -   Example Format:
         ```json
         [{"cmd": "write", "path": "test.js", "content": "console.log('Hello')"}]
+        ```
+    -   For code modifications, you can also use diff format:
+        ```json
+        [{"cmd": "write", "path": "test.js", "diff": "@@ -1 +1 @@\n- console.log('Hello')\n+ console.log('Hello World')"}]
         ```
 2.  **INLINE COMPLETION MODE:** If the user's request is ONLY for code completion (contains phrases like 'Complete the following code'), you MUST respond ONLY with the RAW CODE TEXT.
     -   DO NOT use markdown fences (```) for raw code.
@@ -37,16 +43,17 @@ cmd_queue = queue.Queue()
 
 def scrape_gemini_response(page):
     """
-    Advanced Scraper: Waats for text stability to ensure full response capture.
+    Advanced Scraper: Waits for text stability to ensure full response capture.
     Fixed: Now supports short responses like "[]"
     Enhanced: Better JSON detection and extraction
+    Optimized: Reduced timeout for faster completion
     """
     print("👀 Waiting for Gemini to finish typing...")
     socketio.emit('status', {'msg': 'Gemini is thinking...'})
     
     try:
         # 1. Initial wait for generation to start
-        page.wait_for_timeout(3000)
+        page.wait_for_timeout(1000)  # Reduced from 3000ms to 1000ms for faster response
         
         # Locate the response container
         selectors = [
@@ -63,36 +70,36 @@ def scrape_gemini_response(page):
         
         if not active_selector:
             print("⚠️ Selector not found, waiting blindly...")
-            time.sleep(5)
+            time.sleep(2)  # Reduced from 5s to 2s
             return "Error: Could not find response container."
 
-        # 2. Stability Loop (Max wait: 100s)
+        # 2. Stability Loop (Max wait: 40s) - Reduced from 100s
         last_text = ""
         stable_ticks = 0
         
-        for i in range(50): # 50 checks * 2s interval
+        for i in range(20): # Reduced from 50 checks to 20 checks * 2s interval = 40s max
             elements = page.locator(active_selector)
             count = elements.count()
             
             if count == 0:
-                time.sleep(2)
+                time.sleep(1)  # Reduced from 2s to 1s
                 continue
             
             # Target the last message bubble
             current_text = elements.nth(count - 1).inner_text()
             
-            # 3. Check Stability: If text length unchanged for 4 seconds (2 ticks)
+            # 3. Check Stability: If text length unchanged for 2 seconds (1 tick)
             # FIXED: Changed limit from 10 to 1 to allow short responses like "[]"
             if len(current_text) > 1 and current_text == last_text:
                 stable_ticks += 1
-                if stable_ticks >= 2: # Confirmed stable
+                if stable_ticks >= 1: # Reduced from 2 to 1 for faster response
                     print(f"✅ Generation Complete ({len(current_text)} chars).")
                     return current_text
             else:
                 stable_ticks = 0 # Still typing...
             
             last_text = current_text
-            page.wait_for_timeout(2000) # Wait 2s before next check
+            page.wait_for_timeout(500) # Reduced from 2000ms to 500ms for faster completion
             
     except Exception as e:
         print(f"❌ Scraping Error: {e}")
@@ -172,10 +179,10 @@ def apply_diff_to_content(original_content, diff_commands):
         if isinstance(diff_commands, list) and len(diff_commands) > 0:
             # If it's a list of commands, look for write commands
             for cmd in diff_commands:
-                if cmd.get('cmd') == 'write' and 'content' in cmd:
-                    return cmd['content']
+                if cmd.get('cmd') == 'write' and ('content' in cmd or 'diff' in cmd):
+                    return cmd.get('content', cmd.get('diff', ''))
         elif isinstance(diff_commands, dict) and diff_commands.get('cmd') == 'write':
-            return diff_commands.get('content', '')
+            return diff_commands.get('content', diff_commands.get('diff', ''))
             
         return original_content
     except Exception as e:
@@ -188,7 +195,7 @@ def run_browser_logic():
     """
     with sync_playwright() as p:
         try:
-            # Launch Browser (Visible)
+            # Launch Browser (Visible) with persistent context for session reuse
             browser = p.firefox.launch_persistent_context(
                 user_data_dir="./browser_session",
                 headless=False

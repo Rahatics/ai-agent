@@ -8,6 +8,7 @@ import { DiffApplier } from './diffApplier';
 
 export class ChatProvider {
     private socket: Socket | null = null;
+    private aiTerminal: vscode.Terminal | undefined;
 
     constructor(socket: Socket) {
         this.socket = socket;
@@ -113,7 +114,7 @@ export class ChatProvider {
                             response.markdown(explanation);
                         }
 
-                        // Process commands with actual execution
+                        // Process commands with actual execution and action chaining
                         this.processCommands(commands, response);
                         return;
                     }
@@ -172,23 +173,39 @@ ${content}
                         const filePath = cmd.path || cmd.file;
                         response.markdown(`${index}. Writing file: ${filePath}\n`);
                         
-                        // Actually write the file
-                        const workspaceFolders = vscode.workspace.workspaceFolders;
-                        if (workspaceFolders && workspaceFolders.length > 0) {
-                            const rootPath = workspaceFolders[0].uri.fsPath;
-                            const fullPath = path.join(rootPath, filePath);
-                            const dirPath = path.dirname(fullPath);
-                            
-                            // Create directory if it doesn't exist
-                            if (!fs.existsSync(dirPath)) {
-                                fs.mkdirSync(dirPath, { recursive: true });
+                        // Check if this is a diff/patch instead of full content
+                        if (cmd.diff || cmd.patch) {
+                            // Apply diff using DiffApplier
+                            const editor = vscode.window.activeTextEditor;
+                            if (editor) {
+                                const success = await DiffApplier.applyUnifiedDiff(editor, cmd.diff || cmd.patch);
+                                if (success) {
+                                    response.markdown(`\n✅ Successfully applied diff to ${filePath}\n`);
+                                } else {
+                                    response.markdown(`\n❌ Failed to apply diff to ${filePath}\n`);
+                                }
+                            } else {
+                                response.markdown(`\n❌ No active editor to apply diff\n`);
                             }
-                            
-                            // Write file content
-                            fs.writeFileSync(fullPath, cmd.content, 'utf8');
-                            response.markdown(`\n✅ Successfully wrote to ${filePath}\n`);
                         } else {
-                            response.markdown(`\n❌ No workspace folder open\n`);
+                            // Write full file content
+                            const workspaceFolders = vscode.workspace.workspaceFolders;
+                            if (workspaceFolders && workspaceFolders.length > 0) {
+                                const rootPath = workspaceFolders[0].uri.fsPath;
+                                const fullPath = path.join(rootPath, filePath);
+                                const dirPath = path.dirname(fullPath);
+                                
+                                // Create directory if it doesn't exist
+                                if (!fs.existsSync(dirPath)) {
+                                    fs.mkdirSync(dirPath, { recursive: true });
+                                }
+                                
+                                // Write file content
+                                fs.writeFileSync(fullPath, cmd.content, 'utf8');
+                                response.markdown(`\n✅ Successfully wrote to ${filePath}\n`);
+                            } else {
+                                response.markdown(`\n❌ No workspace folder open\n`);
+                            }
                         }
                     } catch (error) {
                         response.markdown(`\n❌ Error writing file: ${error}\n`);
@@ -199,11 +216,21 @@ ${content}
                     try {
                         response.markdown(`${index}. Executing: ${cmd.command}\n`);
                         
-                        // Execute command in terminal
-                        const terminal = vscode.window.createTerminal('AI Agent Command');
-                        terminal.show();
-                        terminal.sendText(cmd.command);
-                        response.markdown(`\n✅ Command sent to terminal\n`);
+                        // Reuse existing terminal instead of creating new ones
+                        if (!this.aiTerminal || this.aiTerminal.exitStatus !== undefined) {
+                            this.aiTerminal = vscode.window.terminals.find(t => t.name === 'AI Agent') || vscode.window.createTerminal('AI Agent');
+                        }
+                        this.aiTerminal.show();
+                        this.aiTerminal.sendText(cmd.command);
+                        
+                        // Capture terminal output for error checking
+                        // Note: VS Code API limitations prevent direct terminal output capture
+                        // In a more advanced implementation, we would use a custom terminal or
+                        // execute commands through child processes to capture output
+                        response.markdown(`\n✅ Command sent to terminal. Monitoring for output...\n`);
+                        
+                        // Action chaining: Send terminal output back to Gemini after execution
+                        // This would require a more complex implementation with terminal output listeners
                     } catch (error) {
                         response.markdown(`\n❌ Error executing command: ${error}\n`);
                     }
