@@ -4,11 +4,12 @@ import * as vscode from 'vscode';
 import { Socket } from 'socket.io-client';
 import * as fs from 'fs';
 import * as path from 'path';
+import { exec, spawn } from 'child_process';
 import { DiffApplier } from './diffApplier';
 
 export class ChatProvider {
     private socket: Socket | null = null;
-    private aiTerminal: vscode.Terminal | undefined;
+    private commandProcesses: Map<string, any> = new Map();
 
     constructor(socket: Socket) {
         this.socket = socket;
@@ -280,21 +281,31 @@ ${content}
                     try {
                         response.markdown(`${index}. Executing: ${cmd.command}\n`);
                         
-                        // Reuse existing terminal instead of creating new ones
-                        if (!this.aiTerminal || this.aiTerminal.exitStatus !== undefined) {
-                            this.aiTerminal = vscode.window.terminals.find(t => t.name === 'AI Agent') || vscode.window.createTerminal('AI Agent');
-                        }
-                        this.aiTerminal.show();
-                        this.aiTerminal.sendText(cmd.command);
-                        
-                        // Capture terminal output for error checking
-                        // Note: VS Code API limitations prevent direct terminal output capture
-                        // In a more advanced implementation, we would use a custom terminal or
-                        // execute commands through child processes to capture output
-                        response.markdown(`\n✅ Command sent to terminal. Monitoring for output...\n`);
-                        
-                        // Action chaining: Send terminal output back to Gemini after execution
-                        // This would require a more complex implementation with terminal output listeners
+                        // Use Node.js child_process to execute command and capture output
+                        const commandId = `cmd_${Date.now()}`;
+                        this.executeCommandWithOutput(cmd.command, commandId, response, (output: string | null, error: Error | null) => {
+                            if (error) {
+                                const errorMsg = `Error executing command: ${error.message}`;
+                                response.markdown(`\n❌ ${errorMsg}\n`);
+                                
+                                // Automatic feedback loop: Send error back to Gemini
+                                if (this.socket && this.socket.connected) {
+                                    this.socket.emit('send_prompt', {
+                                        message: `[SYSTEM ERROR] Execution failed for 'exec' command. Error: ${errorMsg}. Command output: ${output || 'No output'}`
+                                    });
+                                }
+                            } else {
+                                response.markdown(`\n✅ Command executed successfully.\n`);
+                                if (output) {
+                                    response.markdown(`
+Output:
+\`\`\`
+${output}
+\`\`\`
+`);
+                                }
+                            }
+                        });
                     } catch (error) {
                         const errorMsg = `Error executing command: ${error}`;
                         response.markdown(`\n❌ ${errorMsg}\n`);
@@ -319,6 +330,22 @@ ${content}
                         });
                     }
             }
+        }
+    }
+
+    private executeCommandWithOutput(command: string, commandId: string, response: any, callback: (output: string | null, error: Error | null) => void): void {
+        try {
+            // Execute command using child_process.exec
+            exec(command, { cwd: vscode.workspace.rootPath || process.cwd() }, (error, stdout, stderr) => {
+                const output = stdout || stderr;
+                if (error) {
+                    callback(output, error);
+                } else {
+                    callback(output, null);
+                }
+            });
+        } catch (error) {
+            callback(null, error as Error);
         }
     }
 }

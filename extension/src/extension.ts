@@ -88,10 +88,10 @@ export function activate(context: vscode.ExtensionContext) {
             case 'scan_files':
                 // Smart context management: Focus on relevant files only
                 try {
-                    // Get recently accessed files
-                    const recentlyAccessedFiles = await getRecentlyAccessedFiles();
+                    // Get recently accessed files using Memento API
+                    const recentlyAccessedFiles = await getRecentlyAccessedFiles(context);
                     
-                    // Get git modified files
+                    // Get git modified files using Git API
                     const gitModifiedFiles = await getGitModifiedFiles();
                     
                     // Get main entry point files (package.json, requirements.txt, etc.)
@@ -153,19 +153,37 @@ export function activate(context: vscode.ExtensionContext) {
         }
     }
     
-    // Helper function to get recently accessed files
-    async function getRecentlyAccessedFiles(): Promise<string[]> {
-        // For now, we'll return an empty array as this requires more complex implementation
-        // In a full implementation, we would track file access times
-        return [];
+    // Helper function to get recently accessed files using Memento API
+    async function getRecentlyAccessedFiles(context: vscode.ExtensionContext): Promise<string[]> {
+        try {
+            // Get recently accessed files from global state
+            const recentlyAccessed = context.globalState.get<string[]>('recentlyAccessedFiles', []);
+            return recentlyAccessed;
+        } catch (error) {
+            return [];
+        }
     }
     
-    // Helper function to get git modified files
+    // Helper function to get git modified files using Git API
     async function getGitModifiedFiles(): Promise<string[]> {
         try {
-            // This would require executing git commands
-            // For now, we'll return an empty array as a placeholder
-            return [];
+            // Use VS Code's Git API to get modified files
+            const gitExtension = vscode.extensions.getExtension('vscode.git');
+            if (!gitExtension) {
+                return [];
+            }
+            
+            const gitApi = gitExtension.exports.getAPI(1);
+            if (!gitApi || !gitApi.repositories || gitApi.repositories.length === 0) {
+                return [];
+            }
+            
+            const repository = gitApi.repositories[0];
+            const changes = repository.state.workingTreeChanges
+                .concat(repository.state.indexChanges)
+                .concat(repository.state.mergeChanges);
+                
+            return changes.map((change: any) => change.uri.path.split('/').pop() || '');
         } catch (error) {
             return [];
         }
@@ -197,6 +215,22 @@ export function activate(context: vscode.ExtensionContext) {
         
         return entryPoints;
     }
+    
+    // Track file access for recently accessed files
+    context.subscriptions.push(vscode.workspace.onDidOpenTextDocument((document) => {
+        try {
+            const fileName = path.basename(document.fileName);
+            const recentlyAccessed = context.globalState.get<string[]>('recentlyAccessedFiles', []);
+            
+            // Add to the beginning of the array
+            const updated = [fileName, ...recentlyAccessed.filter(f => f !== fileName)].slice(0, 20); // Keep only last 20
+            
+            // Save to global state
+            context.globalState.update('recentlyAccessedFiles', updated);
+        } catch (error) {
+            // Ignore errors
+        }
+    }));
 }
 
 export function deactivate() {

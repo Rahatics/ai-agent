@@ -1,14 +1,16 @@
 // @ts-ignore: VS Code types may not be available in development environment
 import * as vscode from 'vscode';
+// @ts-ignore: diff library types may not be available in development environment
+import * as diff from 'diff';
 
 export class DiffApplier {
     /**
      * Apply a diff/patch to the current document
      * @param editor The text editor to apply the diff to
-     * @param diff The diff content to apply
+     * @param diffContent The diff content to apply
      * @returns Promise that resolves when the diff is applied
      */
-    public static async applyDiff(editor: vscode.TextEditor, diff: string): Promise<boolean> {
+    public static async applyDiff(editor: vscode.TextEditor, diffContent: string): Promise<boolean> {
         try {
             // For now, we'll implement a simple approach that replaces the entire document
             // In a more advanced implementation, we would parse the actual diff format
@@ -21,7 +23,7 @@ export class DiffApplier {
             
             // Apply the edit
             const success = await editor.edit((editBuilder: vscode.TextEditorEdit) => {
-                editBuilder.replace(fullRange, diff);
+                editBuilder.replace(fullRange, diffContent);
             });
             
             if (success) {
@@ -110,48 +112,29 @@ export class DiffApplier {
         unifiedDiff: string
     ): Promise<boolean> {
         try {
-            // This is a simplified implementation
-            // A full implementation would need to parse the unified diff format properly
+            // Use the diff library to parse and apply the unified diff
+            const document = editor.document;
+            const originalContent = document.getText();
             
-            const lines = unifiedDiff.split('\n');
-            let inHunk = false;
-            let contentLines: string[] = [];
+            // Parse the unified diff
+            const patch = diff.parsePatch(unifiedDiff);
             
-            for (const line of lines) {
-                if (line.startsWith('@@')) {
-                    inHunk = true;
-                    continue;
-                }
-                
-                if (inHunk) {
-                    if (line.startsWith('+')) {
-                        // Added line
-                        contentLines.push(line.substring(1));
-                    } else if (line.startsWith('-')) {
-                        // Removed line - skip
-                        continue;
-                    } else if (line.startsWith(' ')) {
-                        // Unchanged line
-                        contentLines.push(line.substring(1));
-                    } else if (line.startsWith('\\')) {
-                        // No newline at end of file - skip
-                        continue;
-                    } else {
-                        // End of hunk
-                        inHunk = false;
-                    }
-                }
+            // Apply the patch to the original content
+            const patchedContent = diff.applyPatch(originalContent, patch[0]);
+            
+            if (patchedContent === false) {
+                // Patch application failed
+                return false;
             }
             
-            // For now, replace the entire document with the parsed content
-            const document = editor.document;
+            // Replace the entire document with the patched content
             const fullRange = new vscode.Range(
                 document.positionAt(0),
                 document.positionAt(document.getText().length)
             );
             
             const success = await editor.edit((editBuilder: vscode.TextEditorEdit) => {
-                editBuilder.replace(fullRange, contentLines.join('\n'));
+                editBuilder.replace(fullRange, patchedContent as string);
             });
             
             if (success) {

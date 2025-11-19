@@ -48,15 +48,13 @@ def scrape_gemini_response(page):
     Enhanced: Better JSON detection and extraction
     Optimized: Reduced timeout for faster completion
     Improved: Better error handling with structured error messages
+    Enhanced: Event-based waiting instead of fixed timeouts
     """
     print("👀 Waiting for Gemini to finish typing...")
     socketio.emit('status', {'msg': 'Gemini is thinking...'})
     
     try:
-        # 1. Initial wait for generation to start
-        page.wait_for_timeout(1000)  # Reduced from 3000ms to 1000ms for faster response
-        
-        # Locate the response container
+        # 1. Wait for response container to appear
         selectors = [
             ".model-response-text", 
             "message-content", 
@@ -65,43 +63,52 @@ def scrape_gemini_response(page):
         
         active_selector = None
         for sel in selectors:
-            if page.locator(sel).count() > 0:
+            try:
+                # Wait for selector to appear with timeout
+                page.wait_for_selector(sel, timeout=5000)
                 active_selector = sel
                 break
+            except:
+                continue
         
         if not active_selector:
             print("⚠️ Selector not found, waiting blindly...")
-            time.sleep(2)  # Reduced from 5s to 2s
             # Return structured error instead of plain string
             return {"type": "error", "msg": "Selector not found after waiting"}
 
-        # 2. Stability Loop (Max wait: 40s) - Reduced from 100s
+        # 2. Wait for text to appear and stabilize
         last_text = ""
         stable_ticks = 0
+        max_wait_time = 30  # Maximum wait time in seconds
+        check_interval = 0.5  # Check every 0.5 seconds
+        max_checks = int(max_wait_time / check_interval)
         
-        for i in range(20): # Reduced from 50 checks to 20 checks * 2s interval = 40s max
+        for i in range(max_checks):
             elements = page.locator(active_selector)
             count = elements.count()
             
             if count == 0:
-                time.sleep(1)  # Reduced from 2s to 1s
+                time.sleep(check_interval)
                 continue
             
             # Target the last message bubble
             current_text = elements.nth(count - 1).inner_text()
             
-            # 3. Check Stability: If text length unchanged for 2 seconds (1 tick)
-            # FIXED: Changed limit from 10 to 1 to allow short responses like "[]"
-            if len(current_text) > 1 and current_text == last_text:
-                stable_ticks += 1
-                if stable_ticks >= 1: # Reduced from 2 to 1 for faster response
-                    print(f"✅ Generation Complete ({len(current_text)} chars).")
-                    return current_text
+            # Check if text has appeared
+            if len(current_text.strip()) > 0:
+                # Check Stability: If text length unchanged for 1 second (2 ticks)
+                if current_text == last_text:
+                    stable_ticks += 1
+                    if stable_ticks >= 2:  # Confirmed stable
+                        print(f"✅ Generation Complete ({len(current_text)} chars).")
+                        return current_text
+                else:
+                    stable_ticks = 0  # Still typing...
             else:
-                stable_ticks = 0 # Still typing...
+                stable_ticks = 0  # No text yet
             
             last_text = current_text
-            page.wait_for_timeout(500) # Reduced from 2000ms to 500ms for faster completion
+            time.sleep(check_interval)
             
     except Exception as e:
         print(f"❌ Scraping Error: {e}")
@@ -113,13 +120,17 @@ def scrape_gemini_response(page):
 
 def extract_json_from_response(response_text):
     """
-    Extract JSON from Gemini response text
+    Extract JSON from Gemini response text with improved parsing
     """
     try:
         # If response is already a dict (structured error), return it
         if isinstance(response_text, dict):
             return response_text
             
+        # Sanitize the response text
+        # Remove any leading/trailing whitespace
+        response_text = response_text.strip()
+        
         # Look for JSON array or object in the response
         # Find the first opening brace or bracket
         first_brace = response_text.find('{')
@@ -247,14 +258,19 @@ def run_browser_logic():
                         ]
                         
                         for sel in input_selectors:
-                            if page.locator(sel).count() > 0:
-                                box = page.locator(sel).first
-                                box.click()
-                                # fill(full_prompt) ব্যবহার করে নতুন প্রম্পট ইনপুট করা
-                                box.fill(full_prompt)
-                                page.keyboard.press("Enter")
-                                input_found = True
-                                break
+                            try:
+                                # Wait for input selector to appear
+                                page.wait_for_selector(sel, timeout=3000)
+                                if page.locator(sel).count() > 0:
+                                    box = page.locator(sel).first
+                                    box.click()
+                                    # fill(full_prompt) ব্যবহার করে নতুন প্রম্পট ইনপুট করা
+                                    box.fill(full_prompt)
+                                    page.keyboard.press("Enter")
+                                    input_found = True
+                                    break
+                            except:
+                                continue
                         
                         if input_found:
                             # Scrape Response
