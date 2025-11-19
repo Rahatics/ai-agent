@@ -1,0 +1,223 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src 'unsafe-inline'; script-src 'unsafe-inline' https://cdn.socket.io; connect-src http://localhost:5000 ws://localhost:5000;">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>AI Agent</title>
+    <style>
+        body { font-family: 'Segoe UI', sans-serif; padding: 10px; background-color: #1e1e1e; color: #fff; display: flex; flex-direction: column; height: 95vh; }
+        
+        /* Tabs */
+        .tab { overflow: hidden; border-bottom: 1px solid #444; background-color: #252526; flex-shrink: 0; }
+        .tab button { background-color: inherit; float: left; border: none; outline: none; cursor: pointer; padding: 10px 20px; color: #ccc; font-size: 13px; }
+        .tab button.active { background-color: #007acc; color: white; border-bottom: 2px solid white; }
+        .tabcontent { display: none; padding: 10px 0; flex-grow: 1; overflow: hidden; }
+        
+        /* Chat Area */
+        #chat-box { height: calc(100% - 100px); overflow-y: auto; border: 1px solid #333; padding: 10px; margin-bottom: 10px; background: #1e1e1e; border-radius: 4px; }
+        .msg { margin: 8px 0; padding: 10px; border-radius: 6px; max-width: 90%; word-wrap: break-word; font-size: 13px; line-height: 1.4; }
+        .user { background: #0e639c; color: white; margin-left: auto; border-bottom-right-radius: 0; }
+        .ai { background: #333; color: #e0e0e0; border: 1px solid #444; border-bottom-left-radius: 0; }
+        .system { background: #252526; color: #858585; font-style: italic; font-size: 11px; text-align: center; border: none; }
+
+        /* Input Area */
+        .input-area { display: flex; gap: 8px; height: 40px; }
+        input { flex: 1; padding: 0 10px; background: #3c3c3c; border: 1px solid #555; color: white; border-radius: 4px; outline: none; }
+        input:focus { border-color: #007acc; }
+        button.send-btn { padding: 0 20px; cursor: pointer; background: #007acc; color: white; border: none; border-radius: 4px; font-weight: bold; }
+        button.send-btn:hover { background: #005a9e; }
+
+        /* Env Button */
+        #env-btn { width: 100%; padding: 12px; background: #28a745; color: white; border: none; cursor: pointer; font-weight: bold; border-radius: 4px; margin-bottom: 10px; display: flex; justify-content: center; align-items: center; gap: 8px; }
+        #env-btn:hover { background: #218838; }
+
+        /* Status Badge */
+        .badge { display: inline-block; padding: 2px 6px; border-radius: 4px; font-size: 11px; margin-left: 5px; }
+        .connected { background: #16825d; color: white; }
+        .disconnected { background: #a31515; color: white; }
+    </style>
+</head>
+<body>
+
+    <div class="tab">
+        <button class="tablinks" onclick="openTab(event, 'BrowserControl')" id="defaultOpen">📡 Status</button>
+        <button class="tablinks" onclick="openTab(event, 'AgentMode')">🤖 Agent Mode</button>
+    </div>
+
+    <div id="BrowserControl" class="tabcontent">
+        <div style="padding: 20px; text-align: center; background: #252526; border-radius: 8px; margin-top: 20px;">
+            <h3>🔌 Server Connection</h3>
+            <p>Status: <span id="status-text" class="badge disconnected">Disconnected</span></p>
+            <hr style="border: 0; border-top: 1px solid #444; margin: 15px 0;">
+            <p style="color: #aaa; font-size: 12px;">
+                1. Run <code>python app.py</code> in terminal.<br>
+                2. Login to Gemini in the opened Chrome window.<br>
+                3. Switch to "Agent Mode".
+            </p>
+        </div>
+    </div>
+
+    <div id="AgentMode" class="tabcontent">
+        <button id="env-btn" onclick="setEnvironment()">
+            <span>🚀</span> Initialize Environment
+        </button>
+        <div id="chat-box"></div>
+        <div class="input-area">
+            <input type="text" id="user-input" placeholder="Ask Gemini to code..." onkeydown="if(event.key === 'Enter') sendMessage()" />
+            <button class="send-btn" onclick="sendMessage()">Send</button>
+        </div>
+    </div>
+
+    <script src="https://cdn.socket.io/4.5.4/socket.io.min.js"></script>
+
+    <script>
+        const vscode = acquireVsCodeApi();
+        const socket = io('http://localhost:5000', { transports: ['websocket', 'polling'] });
+        const chatBox = document.getElementById('chat-box');
+        const statusText = document.getElementById('status-text');
+
+        // --- Socket Events ---
+        socket.on('connect', () => {
+            statusText.innerText = "Connected";
+            statusText.className = "badge connected";
+        });
+
+        socket.on('disconnect', () => {
+            statusText.innerText = "Disconnected";
+            statusText.className = "badge disconnected";
+        });
+
+        socket.on('status', (data) => addMessage(data.msg, 'system'));
+
+        socket.on('ai_response', (data) => {
+            addMessage(data.text, 'ai');
+            processAICommand(data.text);
+        });
+
+        // --- Logic: Process Gemini's JSON ---
+        function processAICommand(text) {
+            // ১. মার্কডাউন ব্লক ক্লিন করা
+            let cleanText = text.replace(/```json/g, "").replace(/```/g, "").trim();
+
+            // ২. JSON এর শুরু এবং শেষ খুঁজে বের করা
+            const firstBracket = cleanText.indexOf('[');
+            const firstCurly = cleanText.indexOf('{');
+            let startIndex = -1;
+
+            // Array আগে নাকি Object আগে?
+            if (firstBracket !== -1 && (firstCurly === -1 || firstBracket < firstCurly)) {
+                startIndex = firstBracket;
+            } else if (firstCurly !== -1) {
+                startIndex = firstCurly;
+            }
+
+            if (startIndex !== -1) {
+                const lastBracket = cleanText.lastIndexOf(']');
+                const lastCurly = cleanText.lastIndexOf('}');
+                const endIndex = Math.max(lastBracket, lastCurly);
+
+                if (endIndex > startIndex) {
+                    const jsonString = cleanText.substring(startIndex, endIndex + 1);
+                    try {
+                        const parsedData = JSON.parse(jsonString);
+                        const commands = Array.isArray(parsedData) ? parsedData : [parsedData];
+
+                        // ৩. কমান্ডগুলো VS Code-এ পাঠানো
+                        commands.forEach(cmd => executeCommand(cmd));
+
+                    } catch (e) {
+                        console.error("JSON Parse Error:", e);
+                        addMessage("⚠️ Failed to parse command. Check console.", 'system');
+                    }
+                }
+            }
+        }
+
+        function executeCommand(command) {
+            addMessage(`⚙️ Executing: ${command.cmd}...`, 'system');
+            
+            if (command.cmd === 'read') {
+                vscode.postMessage({ command: 'read_file', path: command.path || command.file });
+            } 
+            else if (command.cmd === 'write') {
+                vscode.postMessage({ command: 'write_file', path: command.path || command.file, content: command.content });
+            } 
+            else if (command.cmd === 'exec') {
+                vscode.postMessage({ command: 'run_terminal', cmd: command.command });
+            }
+        }
+
+        // --- Logic: Receive from VS Code ---
+        window.addEventListener('message', event => {
+            const msg = event.data;
+
+            if (msg.command === 'file_list') {
+                // স্ট্রং প্রম্পট পাঠানো হচ্ছে
+                const prompt = `Act as a coding agent. You must reply with a strict JSON Array.\n\nCurrent Project Files:\n${msg.files}\n\nExample Response Format:\n[ \n  {"cmd": "exec", "command": "mkdir new_folder"},\n  {"cmd": "write", "path": "new_folder/index.js", "content": "console.log('Hi')"}\n]\n\nAwaiting instructions.`;
+                
+                socket.emit('send_prompt', { message: prompt });
+                socket.emit('set_environment', {});
+                addMessage("Environment Data Sent to Gemini 🚀", 'system');
+            }
+            else if (msg.command === 'file_content') {
+                const hiddenPrompt = `[System Data] Content of ${msg.path}:\n\`\`\`\n${msg.content}\n\`\`\`\nContinue working.`;
+                socket.emit('send_prompt', { message: hiddenPrompt });
+                addMessage(`📖 Sent content of ${msg.path}`, 'system');
+            }
+            else if (msg.command === 'action_done') {
+                // অ্যাকশন শেষ হলে কনসোলে লগ রাখা (জিমিনিকে বিরক্ত না করা)
+                console.log("Action Success:", msg.msg);
+                addMessage(`✅ Success: ${msg.msg}`, 'system');
+            }
+            else if (msg.command === 'error') {
+                addMessage(`❌ Error: ${msg.msg}`, 'system');
+            }
+        });
+
+        // --- UI Interactions ---
+        function setEnvironment() {
+            addMessage("Scanning project...", 'system');
+            vscode.postMessage({ command: 'scan_files' });
+        }
+
+        function sendMessage() {
+            const input = document.getElementById('user-input');
+            const text = input.value.trim();
+            if (!text) return;
+
+            addMessage(text, 'user');
+            socket.emit('send_prompt', { message: text });
+            input.value = '';
+        }
+
+        function addMessage(text, sender) {
+            const div = document.createElement('div');
+            div.className = `msg ${sender}`;
+            div.innerText = text;
+            chatBox.appendChild(div);
+            // অটো স্ক্রল নিচে
+            chatBox.scrollTop = chatBox.scrollHeight;
+        }
+
+        function openTab(evt, tabName) {
+            document.getElementById('BrowserControl').style.display = 'none';
+            document.getElementById('AgentMode').style.display = 'none'; // flex ছিল আগে, এখন none/block দিয়ে হ্যান্ডেল করা নিরাপদ
+            
+            const tab = document.getElementById(tabName);
+            tab.style.display = 'flex';
+            // Agent Mode এর জন্য flex direction কলাম দরকার
+            if(tabName === 'AgentMode') tab.style.flexDirection = 'column';
+
+            const tablinks = document.getElementsByClassName("tablinks");
+            for (let i = 0; i < tablinks.length; i++) {
+                tablinks[i].className = tablinks[i].className.replace(" active", "");
+            }
+            evt.currentTarget.className += " active";
+        }
+        
+        // ডিফল্ট ট্যাব ওপেন
+        document.getElementById("defaultOpen").click();
+    </script>
+</body>
+</html>

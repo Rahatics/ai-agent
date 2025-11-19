@@ -1,0 +1,12 @@
+{
+  "name": "ai-agent-workspace",
+  "version": "1.0.0",
+  "description": "Workspace for AI Agent Extension and Python Server",
+  "scripts": {
+    "start:server": "python server/app.py",
+    "setup:server": "pip install -r server/requirements.txt && playwright install",
+    "setup:extension": "cd extension && npm install",
+    "build:extension": "cd extension && npm run compile"
+  },
+  "author": "mrahat"
+}
