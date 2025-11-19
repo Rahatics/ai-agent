@@ -82,11 +82,9 @@ def run_browser_logic():
     with sync_playwright() as p:
         try:
             # Launch Browser (Visible)
-            browser = p.chromium.launch_persistent_context(
+            browser = p.firefox.launch_persistent_context(
                 user_data_dir="./browser_session",
-                headless=False,
-                args=["--start-maximized"],
-                no_viewport=True
+                headless=False
             )
             
             page = browser.pages[0] if browser.pages else browser.new_page()
