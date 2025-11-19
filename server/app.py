@@ -1,6 +1,8 @@
 import threading
 import queue
 import time
+import json
+import re
 from flask import Flask
 from flask_socketio import SocketIO
 from playwright.sync_api import sync_playwright
@@ -16,6 +18,7 @@ def scrape_gemini_response(page):
     """
     Advanced Scraper: Waits for text stability to ensure full response capture.
     Fixed: Now supports short responses like "[]"
+    Enhanced: Better JSON detection and extraction
     """
     print("👀 Waiting for Gemini to finish typing...")
     socketio.emit('status', {'msg': 'Gemini is thinking...'})
@@ -75,6 +78,89 @@ def scrape_gemini_response(page):
     
     return "Error: Timeout or Selector mismatch."
 
+def extract_json_from_response(response_text):
+    """
+    Extract JSON from Gemini response text
+    """
+    try:
+        # Look for JSON array or object in the response
+        # Find the first opening brace or bracket
+        first_brace = response_text.find('{')
+        first_bracket = response_text.find('[')
+        
+        start_pos = -1
+        if first_brace != -1 and (first_bracket == -1 or first_brace < first_bracket):
+            start_pos = first_brace
+        elif first_bracket != -1:
+            start_pos = first_bracket
+            
+        if start_pos == -1:
+            return None
+            
+        # Find the matching closing brace or bracket
+        bracket_count = 0
+        in_string = False
+        escape_next = False
+        
+        for i in range(start_pos, len(response_text)):
+            char = response_text[i]
+            
+            if escape_next:
+                escape_next = False
+                continue
+                
+            if char == '\\':
+                escape_next = True
+                continue
+                
+            if char == '"' and not escape_next:
+                in_string = not in_string
+                continue
+                
+            if in_string:
+                continue
+                
+            if char in '{[':
+                bracket_count += 1
+            elif char in '}]':
+                bracket_count -= 1
+                
+            if bracket_count == 0:
+                # Found the end of JSON
+                json_str = response_text[start_pos:i+1]
+                try:
+                    # Try to parse it
+                    parsed = json.loads(json_str)
+                    return parsed
+                except json.JSONDecodeError:
+                    # If parsing fails, continue searching
+                    break
+                    
+        return None
+    except Exception as e:
+        print(f"Error extracting JSON: {e}")
+        return None
+
+def apply_diff_to_content(original_content, diff_commands):
+    """
+    Apply diff commands to content
+    """
+    try:
+        # For now, we'll just return the new content from the diff
+        # A more sophisticated implementation would apply actual diffs
+        if isinstance(diff_commands, list) and len(diff_commands) > 0:
+            # If it's a list of commands, look for write commands
+            for cmd in diff_commands:
+                if cmd.get('cmd') == 'write' and 'content' in cmd:
+                    return cmd['content']
+        elif isinstance(diff_commands, dict) and diff_commands.get('cmd') == 'write':
+            return diff_commands.get('content', '')
+            
+        return original_content
+    except Exception as e:
+        print(f"Error applying diff: {e}")
+        return original_content
+
 def run_browser_logic():
     """
     Background thread to handle Playwright browser instance.
@@ -124,7 +210,19 @@ def run_browser_logic():
                         if input_found:
                             # Scrape Response
                             reply = scrape_gemini_response(page)
-                            socketio.emit('ai_response', {'text': reply})
+                            
+                            # Try to extract JSON commands from the response
+                            json_commands = extract_json_from_response(reply)
+                            
+                            # Emit the response with extracted commands if found
+                            if json_commands:
+                                socketio.emit('ai_response', {
+                                    'text': reply,
+                                    'commands': json_commands
+                                })
+                            else:
+                                socketio.emit('ai_response', {'text': reply})
+                                
                             socketio.emit('status', {'msg': 'Reply Received ✅'})
                         else:
                             print("❌ Input box not found")
