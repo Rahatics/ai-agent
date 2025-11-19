@@ -69,11 +69,11 @@ ${textBeforeCursor}
 Provide only the completion without any explanations. Focus on the current code block and its immediate context.`
                 });
 
-                // Timeout after 5 seconds
+                // Timeout after 7 seconds (increased from 5 seconds)
                 setTimeout(() => {
                     this.socket?.off('ai_response', responseHandler);
                     resolve([]);
-                }, 5000);
+                }, 7000);
             } else {
                 resolve([]);
             }

@@ -47,6 +47,7 @@ def scrape_gemini_response(page):
     Fixed: Now supports short responses like "[]"
     Enhanced: Better JSON detection and extraction
     Optimized: Reduced timeout for faster completion
+    Improved: Better error handling with structured error messages
     """
     print("👀 Waiting for Gemini to finish typing...")
     socketio.emit('status', {'msg': 'Gemini is thinking...'})
@@ -71,7 +72,8 @@ def scrape_gemini_response(page):
         if not active_selector:
             print("⚠️ Selector not found, waiting blindly...")
             time.sleep(2)  # Reduced from 5s to 2s
-            return "Error: Could not find response container."
+            # Return structured error instead of plain string
+            return {"type": "error", "msg": "Selector not found after waiting"}
 
         # 2. Stability Loop (Max wait: 40s) - Reduced from 100s
         last_text = ""
@@ -103,14 +105,21 @@ def scrape_gemini_response(page):
             
     except Exception as e:
         print(f"❌ Scraping Error: {e}")
+        # Return structured error instead of plain string
+        return {"type": "error", "msg": f"Scraping failed: {str(e)}"}
     
-    return "Error: Timeout or Selector mismatch."
+    # Return structured error instead of plain string
+    return {"type": "error", "msg": "Timeout or Selector mismatch after maximum wait"}
 
 def extract_json_from_response(response_text):
     """
     Extract JSON from Gemini response text
     """
     try:
+        # If response is already a dict (structured error), return it
+        if isinstance(response_text, dict):
+            return response_text
+            
         # Look for JSON array or object in the response
         # Find the first opening brace or bracket
         first_brace = response_text.find('{')
@@ -192,7 +201,11 @@ def apply_diff_to_content(original_content, diff_commands):
 def run_browser_logic():
     """
     Background thread to handle Playwright browser instance.
+    Enhanced with auto-retry and error handling
     """
+    browser = None
+    page = None
+    
     with sync_playwright() as p:
         try:
             # Launch Browser (Visible) with persistent context for session reuse
@@ -255,22 +268,33 @@ def run_browser_logic():
                                     'text': reply
                                 })
                             else:
-                                # Try to extract JSON commands from the response
-                                json_commands = extract_json_from_response(reply)
-                                
-                                # Emit the response with extracted commands if found
-                                if json_commands:
-                                    socketio.emit('ai_response', {
-                                        'text': reply,
-                                        'commands': json_commands
-                                    })
+                                # Handle structured errors
+                                if isinstance(reply, dict) and reply.get('type') == 'error':
+                                    # Send structured error to extension
+                                    socketio.emit('ai_response', reply)
                                 else:
-                                    socketio.emit('ai_response', {'text': reply})
+                                    # Try to extract JSON commands from the response
+                                    json_commands = extract_json_from_response(reply)
+                                    
+                                    # Emit the response with extracted commands if found
+                                    if json_commands:
+                                        socketio.emit('ai_response', {
+                                            'text': reply,
+                                            'commands': json_commands
+                                        })
+                                    else:
+                                        # Send full response if no commands found (graceful fallback)
+                                        socketio.emit('ai_response', {'text': reply})
                                 
                             socketio.emit('status', {'msg': 'Reply Received ✅'})
                         else:
                             print("❌ Input box not found")
+                            # Send error to both status and ai_response to ensure extension handles it
                             socketio.emit('status', {'msg': 'Error: Input box not found'})
+                            socketio.emit('ai_response', {
+                                'type': 'error', 
+                                'msg': 'Input box not found, check browser.'
+                            })
 
                     cmd_queue.task_done()
                     
@@ -278,9 +302,26 @@ def run_browser_logic():
                     pass # Keep loop alive
                 except Exception as e:
                     print(f"❌ Loop Error: {e}")
+                    # Send structured error to extension
+                    socketio.emit('ai_response', {
+                        'type': 'error', 
+                        'msg': f'Loop error: {str(e)}'
+                    })
                     
         except Exception as e:
             print(f"❌ Critical Browser Error: {e}")
+            # Send structured error to extension
+            socketio.emit('ai_response', {
+                'type': 'error', 
+                'msg': f'Critical browser error: {str(e)}'
+            })
+        finally:
+            # Cleanup browser resources
+            if browser:
+                try:
+                    browser.close()
+                except:
+                    pass
 
 # Start Browser Thread
 browser_thread = threading.Thread(target=run_browser_logic)

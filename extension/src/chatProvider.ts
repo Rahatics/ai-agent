@@ -26,7 +26,7 @@ export class ChatProvider {
             if (this.socket && this.socket.connected) {
                 // Listen for AI response
                 const responseHandler = (data: any) => {
-                    if (data.text) {
+                    if (data.text || data.type === 'error') {
                         // Clean up listener
                         this.socket?.off('ai_response', responseHandler);
                         
@@ -36,7 +36,7 @@ export class ChatProvider {
                         }
                         
                         // Process and send the response
-                        this.processAIResponse(data.text, response);
+                        this.processAIResponse(data, response);
                         
                         resolve({
                             metadata: {
@@ -81,9 +81,17 @@ export class ChatProvider {
         });
     }
 
-    private processAIResponse(text: string, response: any): void {
+    private processAIResponse(data: any, response: any): void {
+        // Handle structured errors
+        if (data.type === 'error') {
+            response.markdown(`❌ **Error**: ${data.msg}`);
+            return;
+        }
+        
+        const text = data.text;
+        
         // Check if the response contains commands to execute
-        if (text.includes('"cmd"')) {
+        if (text && text.includes('"cmd"')) {
             try {
                 // Extract JSON commands from the response
                 let cleanText = text.replace(/```json/g, "").replace(/```/g, "").trim();
@@ -127,7 +135,7 @@ export class ChatProvider {
         }
         
         // If no commands, just display the text
-        response.markdown(text);
+        response.markdown(text || "No response received.");
     }
 
     private async processCommands(commands: any[], response: any): Promise<void> {
@@ -158,13 +166,37 @@ ${content}
 \`\`\`
 `);
                             } else {
-                                response.markdown(`\n❌ File not found: ${filePath}\n`);
+                                const errorMsg = `File not found: ${filePath}`;
+                                response.markdown(`\n❌ ${errorMsg}\n`);
+                                
+                                // Automatic feedback loop: Send error back to Gemini
+                                if (this.socket && this.socket.connected) {
+                                    this.socket.emit('send_prompt', {
+                                        message: `[SYSTEM ERROR] Execution failed for 'read' command. Error: ${errorMsg}. Please check the file path and try again.`
+                                    });
+                                }
                             }
                         } else {
-                            response.markdown(`\n❌ No workspace folder open\n`);
+                            const errorMsg = "No workspace folder open";
+                            response.markdown(`\n❌ ${errorMsg}\n`);
+                            
+                            // Automatic feedback loop: Send error back to Gemini
+                            if (this.socket && this.socket.connected) {
+                                this.socket.emit('send_prompt', {
+                                    message: `[SYSTEM ERROR] Execution failed for 'read' command. Error: ${errorMsg}. Please ensure a workspace folder is open.`
+                                });
+                            }
                         }
                     } catch (error) {
-                        response.markdown(`\n❌ Error reading file: ${error}\n`);
+                        const errorMsg = `Error reading file: ${error}`;
+                        response.markdown(`\n❌ ${errorMsg}\n`);
+                        
+                        // Automatic feedback loop: Send error back to Gemini
+                        if (this.socket && this.socket.connected) {
+                            this.socket.emit('send_prompt', {
+                                message: `[SYSTEM ERROR] Execution failed for 'read' command. Error: ${errorMsg}. Please try a different approach.`
+                            });
+                        }
                     }
                     break;
                     
@@ -182,10 +214,26 @@ ${content}
                                 if (success) {
                                     response.markdown(`\n✅ Successfully applied diff to ${filePath}\n`);
                                 } else {
-                                    response.markdown(`\n❌ Failed to apply diff to ${filePath}\n`);
+                                    const errorMsg = `Failed to apply diff to ${filePath}`;
+                                    response.markdown(`\n❌ ${errorMsg}\n`);
+                                    
+                                    // Automatic feedback loop: Send error back to Gemini
+                                    if (this.socket && this.socket.connected) {
+                                        this.socket.emit('send_prompt', {
+                                            message: `[SYSTEM ERROR] Execution failed for 'write' command with diff. Error: ${errorMsg}. Please check the diff format and try again.`
+                                        });
+                                    }
                                 }
                             } else {
-                                response.markdown(`\n❌ No active editor to apply diff\n`);
+                                const errorMsg = "No active editor to apply diff";
+                                response.markdown(`\n❌ ${errorMsg}\n`);
+                                
+                                // Automatic feedback loop: Send error back to Gemini
+                                if (this.socket && this.socket.connected) {
+                                    this.socket.emit('send_prompt', {
+                                        message: `[SYSTEM ERROR] Execution failed for 'write' command with diff. Error: ${errorMsg}. Please open a file in the editor first.`
+                                    });
+                                }
                             }
                         } else {
                             // Write full file content
@@ -204,11 +252,27 @@ ${content}
                                 fs.writeFileSync(fullPath, cmd.content, 'utf8');
                                 response.markdown(`\n✅ Successfully wrote to ${filePath}\n`);
                             } else {
-                                response.markdown(`\n❌ No workspace folder open\n`);
+                                const errorMsg = "No workspace folder open";
+                                response.markdown(`\n❌ ${errorMsg}\n`);
+                                
+                                // Automatic feedback loop: Send error back to Gemini
+                                if (this.socket && this.socket.connected) {
+                                    this.socket.emit('send_prompt', {
+                                        message: `[SYSTEM ERROR] Execution failed for 'write' command. Error: ${errorMsg}. Please ensure a workspace folder is open.`
+                                    });
+                                }
                             }
                         }
                     } catch (error) {
-                        response.markdown(`\n❌ Error writing file: ${error}\n`);
+                        const errorMsg = `Error writing file: ${error}`;
+                        response.markdown(`\n❌ ${errorMsg}\n`);
+                        
+                        // Automatic feedback loop: Send error back to Gemini
+                        if (this.socket && this.socket.connected) {
+                            this.socket.emit('send_prompt', {
+                                message: `[SYSTEM ERROR] Execution failed for 'write' command. Error: ${errorMsg}. Please try a different approach.`
+                            });
+                        }
                     }
                     break;
                     
@@ -232,12 +296,28 @@ ${content}
                         // Action chaining: Send terminal output back to Gemini after execution
                         // This would require a more complex implementation with terminal output listeners
                     } catch (error) {
-                        response.markdown(`\n❌ Error executing command: ${error}\n`);
+                        const errorMsg = `Error executing command: ${error}`;
+                        response.markdown(`\n❌ ${errorMsg}\n`);
+                        
+                        // Automatic feedback loop: Send error back to Gemini
+                        if (this.socket && this.socket.connected) {
+                            this.socket.emit('send_prompt', {
+                                message: `[SYSTEM ERROR] Execution failed for 'exec' command. Error: ${errorMsg}. Please try a different approach.`
+                            });
+                        }
                     }
                     break;
                     
                 default:
-                    response.markdown(`${index}. Unknown command: ${cmd.cmd}\n`);
+                    const errorMsg = `Unknown command: ${cmd.cmd}`;
+                    response.markdown(`${index}. ❌ ${errorMsg}\n`);
+                    
+                    // Automatic feedback loop: Send error back to Gemini
+                    if (this.socket && this.socket.connected) {
+                        this.socket.emit('send_prompt', {
+                            message: `[SYSTEM ERROR] Execution failed. Error: ${errorMsg}. Please use only supported commands (read, write, exec).`
+                        });
+                    }
             }
         }
     }
