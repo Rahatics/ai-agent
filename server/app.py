@@ -211,17 +211,25 @@ def run_browser_logic():
                             # Scrape Response
                             reply = scrape_gemini_response(page)
                             
-                            # Try to extract JSON commands from the response
-                            json_commands = extract_json_from_response(reply)
-                            
-                            # Emit the response with extracted commands if found
-                            if json_commands:
+                            # Check if this is a completion request
+                            if 'completion' in text.lower():
+                                # Send special completion result format
                                 socketio.emit('ai_response', {
-                                    'text': reply,
-                                    'commands': json_commands
+                                    'type': 'completion_result',
+                                    'text': reply
                                 })
                             else:
-                                socketio.emit('ai_response', {'text': reply})
+                                # Try to extract JSON commands from the response
+                                json_commands = extract_json_from_response(reply)
+                                
+                                # Emit the response with extracted commands if found
+                                if json_commands:
+                                    socketio.emit('ai_response', {
+                                        'text': reply,
+                                        'commands': json_commands
+                                    })
+                                else:
+                                    socketio.emit('ai_response', {'text': reply})
                                 
                             socketio.emit('status', {'msg': 'Reply Received ✅'})
                         else:

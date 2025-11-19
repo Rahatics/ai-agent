@@ -2,6 +2,9 @@
 import * as vscode from 'vscode';
 // @ts-ignore: socket.io-client types may not be available in development environment
 import { Socket } from 'socket.io-client';
+import * as fs from 'fs';
+import * as path from 'path';
+import { DiffApplier } from './diffApplier';
 
 export class ChatProvider {
     private socket: Socket | null = null;
@@ -110,7 +113,7 @@ export class ChatProvider {
                             response.markdown(explanation);
                         }
 
-                        // Process commands
+                        // Process commands with actual execution
                         this.processCommands(commands, response);
                         return;
                     }
@@ -126,26 +129,89 @@ export class ChatProvider {
         response.markdown(text);
     }
 
-    private processCommands(commands: any[], response: any): void {
+    private async processCommands(commands: any[], response: any): Promise<void> {
         response.markdown('\n\nExecuting commands:\n');
         
-        commands.forEach((cmd, index) => {
+        for (let i = 0; i < commands.length; i++) {
+            const cmd = commands[i];
+            const index = i + 1;
+            
             switch (cmd.cmd) {
                 case 'read':
-                    response.markdown(`${index + 1}. Reading file: ${cmd.path || cmd.file}\n`);
+                    try {
+                        const filePath = cmd.path || cmd.file;
+                        response.markdown(`${index}. Reading file: ${filePath}\n`);
+                        
+                        // Actually read the file
+                        const workspaceFolders = vscode.workspace.workspaceFolders;
+                        if (workspaceFolders && workspaceFolders.length > 0) {
+                            const rootPath = workspaceFolders[0].uri.fsPath;
+                            const fullPath = path.join(rootPath, filePath);
+                            
+                            if (fs.existsSync(fullPath)) {
+                                const content = fs.readFileSync(fullPath, 'utf8');
+                                response.markdown(`
+Content of ${filePath}:
+\`\`\`
+${content}
+\`\`\`
+`);
+                            } else {
+                                response.markdown(`\n❌ File not found: ${filePath}\n`);
+                            }
+                        } else {
+                            response.markdown(`\n❌ No workspace folder open\n`);
+                        }
+                    } catch (error) {
+                        response.markdown(`\n❌ Error reading file: ${error}\n`);
+                    }
                     break;
+                    
                 case 'write':
-                    response.markdown(`${index + 1}. Writing file: ${cmd.path || cmd.file}\n`);
+                    try {
+                        const filePath = cmd.path || cmd.file;
+                        response.markdown(`${index}. Writing file: ${filePath}\n`);
+                        
+                        // Actually write the file
+                        const workspaceFolders = vscode.workspace.workspaceFolders;
+                        if (workspaceFolders && workspaceFolders.length > 0) {
+                            const rootPath = workspaceFolders[0].uri.fsPath;
+                            const fullPath = path.join(rootPath, filePath);
+                            const dirPath = path.dirname(fullPath);
+                            
+                            // Create directory if it doesn't exist
+                            if (!fs.existsSync(dirPath)) {
+                                fs.mkdirSync(dirPath, { recursive: true });
+                            }
+                            
+                            // Write file content
+                            fs.writeFileSync(fullPath, cmd.content, 'utf8');
+                            response.markdown(`\n✅ Successfully wrote to ${filePath}\n`);
+                        } else {
+                            response.markdown(`\n❌ No workspace folder open\n`);
+                        }
+                    } catch (error) {
+                        response.markdown(`\n❌ Error writing file: ${error}\n`);
+                    }
                     break;
+                    
                 case 'exec':
-                    response.markdown(`${index + 1}. Executing: ${cmd.command}\n`);
+                    try {
+                        response.markdown(`${index}. Executing: ${cmd.command}\n`);
+                        
+                        // Execute command in terminal
+                        const terminal = vscode.window.createTerminal('AI Agent Command');
+                        terminal.show();
+                        terminal.sendText(cmd.command);
+                        response.markdown(`\n✅ Command sent to terminal\n`);
+                    } catch (error) {
+                        response.markdown(`\n❌ Error executing command: ${error}\n`);
+                    }
                     break;
+                    
                 default:
-                    response.markdown(`${index + 1}. Unknown command: ${cmd.cmd}\n`);
+                    response.markdown(`${index}. Unknown command: ${cmd.cmd}\n`);
             }
-            
-            // Here we would actually execute the commands through VS Code APIs
-            // This would be done in the extension.ts file which has access to those APIs
-        });
+        }
     }
 }

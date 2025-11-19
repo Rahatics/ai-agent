@@ -25,6 +25,21 @@ export function activate(context: vscode.ExtensionContext) {
     // Register the chat participant
     const chatProvider = new ChatProvider(socket);
     
+    // Register chat participant with VS Code
+    const chatDisposable = vscode.chat.createChatParticipant('gemini-agent', 
+        async (request, _context, response, _token) => {
+            return await chatProvider.handleChatRequest(request, response);
+        }
+    );
+    
+    // Set chat participant metadata
+    // @ts-ignore: These properties may not exist in the current VS Code version
+    chatDisposable.iconPath = vscode.Uri.parse('https://upload.wikimedia.org/wikipedia/commons/8/8a/Gemini_logo.svg');
+    // @ts-ignore: These properties may not exist in the current VS Code version
+    chatDisposable.description = 'Gemini AI Coding Assistant';
+    // @ts-ignore: These properties may not exist in the current VS Code version
+    chatDisposable.fullName = 'Gemini AI Coding Assistant';
+    
     // Register traditional command for opening webview (optional, for backward compatibility)
     let disposable = vscode.commands.registerCommand('ai-agent.open', () => {
         vscode.window.showInformationMessage('AI Assistant is now available in the chat view and provides inline completions!');
@@ -32,6 +47,7 @@ export function activate(context: vscode.ExtensionContext) {
     
     // Add disposables to context
     context.subscriptions.push(completionDisposable);
+    context.subscriptions.push(chatDisposable);
     context.subscriptions.push(disposable);
     
     // Handle socket events
